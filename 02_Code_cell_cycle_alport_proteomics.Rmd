@@ -1,0 +1,363 @@
+---
+title: "Cell_cycle_alport_proteomics"
+author: "Geremy Clair"
+date: "December 17, 2020"
+output: word_document
+always_allow_html: yes
+---
+
+```{r knit_options, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+knitr::opts_chunk$set(fig.width=10, fig.height=6, echo = TRUE, results = TRUE, warning = FALSE, message=FALSE) 
+
+options(repos=structure(c(CRAN="https://mirror.ibcp.fr/pub/CRAN/")))
+setwd("~/Documents/01 - Papers/08 - Perrin FUCCI/data analysis/")
+```
+
+# Required libraries
+
+The required libraries are loaded 
+- RomicsProcessor written by Geremy Clair (2020) is used to perform trackable transformation and statistics to the dataset 
+- proteinminion written by Geremy Clair (2020) is used to extract fasta information and to perform gene ontology and KEGG pathways enrichement analysis (in prep 2020)
+```{r load_packages}
+library("RomicsProcessor")
+library("proteinminion")
+library("DT") #for the rendering of the enrichment tables 
+library("eulerr") #for the venn and euler diagrams
+```
+
+# Fasta and protein ontologies download using 'Protein Mini-On'
+
+Using the package 'Protein Mini-on' (Geremy Clair 2020, in prep.), The fasta file was downloaded from Uniprot.
+```{r download_fasta}
+if(!file.exists("./03_Output_files/Mus_musculus_proteome_up000000589_2020_07_13.fasta")){
+  download_UniProtFasta(proteomeID = "up000000589", reviewed = F, export=T, file="./03_Output_files/Mus_musculus_proteome_up000000589_2020_07_13.fasta")
+  }
+```
+
+Then we've extracted and parsed the details contained in the fasta file header into a table containing a list of details for each protein.
+```{r UniProtFasta_info}
+if(!file.exists("./03_Output_files/UniProt_Fasta_info.csv")){
+ write.csv(UniprotFastaParser(file = "./03_Output_files/Mus_musculus_proteome_up000000589_2020_07_13.fasta"),file="./03_Output_files/UniProt_Fasta_info.csv")
+}
+```
+
+For each entry, 'Protein Mini-On' was use to download Gene Ontology (GO) terms and KEGG ids associated with the proteins. This upload was performed the exact same day as the download of the fasta file was done to ensure that the IDs will be identical as the ones present in the fasta file used).
+```{r UniProtTable_download}
+if(file.exists("./03_Output_files/UniprotTable_Mus_musculus_proteome_up000000589_2020_07_13.csv")){
+  UniProtTable<-read.csv("./03_Output_files/UniprotTable_Mus_musculus_proteome_up000000589_2020_07_13.csv")
+  }else{
+  download_UniProtTable(proteomeID = "up000000589", reviewed = F)
+  write.csv(UniProtTable,("./03_Output_files/UniprotTable_Mus_musculus_proteome_up000000589_2020_07_13.csv"),row.names=FALSE)
+  }
+```
+
+'Protein-Mini-on' was then used to generate a table (UniProtTable) containing the list of GOs and their associated protein IDs
+```{r UniProtTable_GO_generation}
+if(file.exists("./03_Output_files/UniProtTable_GO.csv")){
+  UniProtTable_GO<-read.csv(file="./03_Output_files/UniProtTable_GO.csv")
+}else{
+generate_UniProtTable_GO()
+write.csv(UniProtTable_GO,file="./03_Output_files/UniProtTable_GO.csv",row.names=FALSE)
+}
+```
+
+'Protein-Mini-on' was used to download similar information from KEGG for the Pathways associated with each protein
+```{r UniProtTable_KEGG_generation}
+if(file.exists("./03_Output_files/UniProtTable_KEGG.csv")){
+  UniProtTable_KEGG<-read.csv(file="./03_Output_files/UniProtTable_KEGG.csv")
+}else{
+generate_UniProtTable_KEGG()
+write.csv(UniProtTable_KEGG,file="./03_Output_files/UniProtTable_KEGG.csv",row.names=FALSE)
+}
+```
+
+# MaxQuant import
+The data was searched in MaxQuant using the mouse database generated above using the LFQ quantification and Match Beetwen Runs (MBR) algorithm, the parameter.txt file indicates the parameters employed.
+```{r data_import}
+data<-extractMaxQuant("./01_Source_files/proteinGroups.txt",quantification_type = "iBAQ",cont.rm = T,site.rm = T,rev.rm = T)
+write.csv(data,file="./03_Output_files/data_raw.csv")
+IDsdetails<-extractMaxQuantIDs("./01_Source_files/proteinGroups.txt",cont.rm = T,site.rm = T,rev.rm = T)
+IDsdetails<-cbind(UniProt_Name=sub(".*\\|","",IDsdetails$protein.ids), IDsdetails)
+write.csv(IDsdetails,file="./03_Output_files/IDs details.csv")
+colnames(data)<- sub("iBAQ.","",colnames(data))
+data[,1]<- sub(".*\\|","",data[,1])
+metadata<- read.csv(file = "./01_Source_files/metadata.csv")
+colnames(metadata)<-tolower(colnames(metadata))
+```
+
+# Romics_object creation
+
+The data and metadata were placed in an romics_object, the sample names were retrieved from the metadata, the condition  will be use for the coloring of the Figures.
+```{r create_romics}
+romics_proteins<- romicsCreateObject(data, metadata,main_factor = "Condition")
+```
+
+
+# Data cleaning and normalization
+
+The zeros were replaced by missing values
+```{r zero_missing}
+romics_proteins<-romicsZeroToMissing(romics_proteins)
+```
+
+
+The proteins to be conserved for quantification were selected to contain at least 60% of complete value for a given condition (2/3 sample of a given condition at least), the overall missingness was evaluated after filtering.
+```{r missing_filter_full}
+romics_proteins<-romicsFilterMissing(romics_proteins,percentage_completeness = 60)
+print(paste0(nrow(romics_proteins$data),"/", nrow(romics_proteins$original_data)," proteins remained after filtering", " (",round(nrow(romics_proteins$data)/nrow(romics_proteins$original_data)*100,2),"%)."))
+```
+
+The data was log2 transformed, the distriution boxplot were then plotted
+```{r log2_full}
+romics_proteins<-log2transform(romics_proteins)
+distribBoxplot(romics_proteins)
+```
+
+As the same quantity of protein was labelled for each sample, the expectation is that the distribution of the protein abundance is centered, therefore a median centering was performed prior to plot again the distribution boxplots.
+```{r median_norm_full}
+romics_proteins<-medianCenterSample(romics_proteins)
+distribBoxplot(romics_proteins)
+```
+
+# Data imputation
+
+For some of the subsequent statistics imputations are required, we performed an imputation by assuming that the "non-detected" proteins were either low abundance or missing using the method developped by Tyranova et al. (PMID: 27348712). The gray distribution is the data distribution, the yellow distribution is the one for the random values used for imputation.
+```{r imput_missing_full}
+imputeMissingEval(romics_proteins,nb_stdev = 2,width_stdev = 0.5, bin=1)
+romics_proteins<-imputeMissing(romics_proteins,nb_stdev = 2,width_stdev = 0.5)
+```
+
+The PCA grouping were checked after imputation
+```{r grouping_after_imputation_full}
+indPCAplot(romics_proteins, plotType = "percentage")
+indPCAplot(romics_proteins, plotType = "individual",Xcomp=1,Ycomp =2,label = F)
+indPCAplot(romics_proteins,  plotType = "individual",Xcomp=1,Ycomp =3,label = F)
+indPCA3D(romics_proteins)
+```
+
+We will extract the contributions of the proteins to the 3 first components
+```{r}
+PCA_results<-romicsPCA(romics_proteins)
+PCA_var_coord<-data.frame(PCA_results$var$coord[,1:3])
+colnames(PCA_var_coord)<-c("PC1","PC2","PC3")
+
+ ggplot(PCA_var_coord, aes(x=PCA_var_coord[,1], y=PCA_var_coord[,2]))+
+    geom_point(size = 3,alpha=I(0.5)) +
+    xlab("PC1")+
+    ylab("PC2")+
+    ggtitle("Principal component analysis protein contributions")+
+    theme_ROP()
+  
+ ggplot(PCA_var_coord, aes(x=PCA_var_coord[,2], y=PCA_var_coord[,3]))+
+    geom_point(size = 3,alpha=I(0.5)) +
+    xlab("PC2")+
+    ylab("PC3")+
+    ggtitle("Principal component analysis protein contributions")+
+    theme_ROP()
+```
+
+We've extracted the top10% proteins contributing the most to each PCA axis 
+
+```{r}
+tenpercentproteins<-round(nrow(PCA_var_coord)*10/100,digits = 0)
+ 
+print("Proteins contributions to PC1")
+ top10percentPC1<-PCA_var_coord[1]
+ top10percentPC1_names<-rownames(top10percentPC1)
+ top10percentPC1<-as.numeric(t(top10percentPC1))
+ names(top10percentPC1)<-gsub(";.*","",top10percentPC1_names)
+ top10percentPC1<-abs(top10percentPC1)
+ top10percentPC1<-top10percentPC1[order(top10percentPC1,decreasing = T)]
+ datatable(data.frame(abs_contrib=top10percentPC1))
+ top10percentPC1<-names(top10percentPC1[1:tenpercentproteins])
+ 
+print("Proteins contributions to PC2")
+ top10percentPC2<-PCA_var_coord[2]
+ top10percentPC2_names<-rownames(top10percentPC2)
+ top10percentPC2<-as.numeric(t(top10percentPC2))
+ names(top10percentPC2)<-gsub(";.*","",top10percentPC2_names)
+ top10percentPC2<-abs(top10percentPC2)
+ top10percentPC2<-top10percentPC2[order(top10percentPC2,decreasing = T)]
+ datatable(data.frame(abs_contrib=top10percentPC2))
+ top10percentPC2<-names(top10percentPC2[1:tenpercentproteins])
+ 
+print("Proteins contributions to PC3")
+ top10percentPC3<-PCA_var_coord[3]
+ top10percentPC3_names<-rownames(top10percentPC3)
+ top10percentPC3<-as.numeric(t(top10percentPC3))
+ names(top10percentPC3)<-gsub(";.*","",top10percentPC3_names)
+ top10percentPC3<-abs(top10percentPC3)
+ top10percentPC3<-top10percentPC3[order(top10percentPC3,decreasing = T)]
+ datatable(data.frame(abs_contrib=top10percentPC3))
+ top10percentPC3<-names(top10percentPC3[1:tenpercentproteins])
+
+ universe<-gsub(";.*","",rownames(PCA_var_coord))
+ 
+  write.csv(top10percentPC1,"./03_Output_files/top10percentPC1.csv")
+  write.csv(top10percentPC2,"./03_Output_files/top10percentPC2.csv")
+  write.csv(top10percentPC3,"./03_Output_files/top10percentPC3.csv")
+```
+
+Now let's perform enrichment analysis to evaluate the function participating the most to these separations
+```{r}
+PC1_top10_enrich <- cbind(Type="GO top10% PC1", UniProt_GO_Fisher(top10percentPC1,universe))
+PC2_top10_enrich <- cbind(Type="GO top10% PC2", UniProt_GO_Fisher(top10percentPC2,universe))
+PC3_top10_enrich <- cbind(Type="GO top10% PC3", UniProt_GO_Fisher(top10percentPC3,universe))
+PC1_top10_enrich_KEGG <- cbind(Type="KEGG top10% PC1", UniProt_KEGG_Fisher(top10percentPC1,universe))
+PC2_top10_enrich_KEGG <- cbind(Type="KEGG top10% PC2", UniProt_KEGG_Fisher(top10percentPC2,universe))
+PC3_top10_enrich_KEGG <- cbind(Type="KEGG top10% PC3", UniProt_KEGG_Fisher(top10percentPC3,universe))
+
+enriched_top10_percent<-rbind(PC1_top10_enrich,PC2_top10_enrich,PC3_top10_enrich,PC1_top10_enrich_KEGG ,PC2_top10_enrich_KEGG ,PC3_top10_enrich_KEGG )
+enriched_top10_percent<-enriched_top10_percent[enriched_top10_percent$pval<0.05&enriched_top10_percent$fold_change>1,]
+datatable(enriched_top10_percent)
+```
+
+# Statistics
+
+The means and stdev are calculated for each group
+```{r Means_stdevs_full}
+romics_proteins<-romicsMean(romics_proteins)
+romics_proteins<-romicsSd(romics_proteins)
+```
+
+Some general statistics are performed (ANOVA, paired T.tests).
+First the ANOVA was performed
+```{r ANOVA}
+romics_proteins<-romicsANOVA(romics_proteins)
+print(paste0(sum(romics_proteins$statistics$ANOVA_p<0.05), " proteins had an ANOVA p<0.05."))
+```
+
+the pvalue distribtion was plotted
+```{r ANOVA_pval}
+pval<-data.frame(ids=rownames(romics_proteins$statistics), p=romics_proteins$statistics$ANOVA_p)
+ggplot(pval, aes(p)) + geom_histogram(binwidth = 0.01)+theme_ROP()+ggtitle("ANOVA p frequency plot")
+```
+
+A heatmap depicting the proteins passing an ANOVA p<0.05 is plotted, the clusters obtained were saved in the statistics.
+```{r Heatmap_full}
+romicsHeatmap(romics_proteins,variable_hclust_number = 3,ANOVA_filter = "p", p=0.05,sample_hclust = F)
+romics_proteins<-romicsVariableHclust(romics_proteins,clusters = 3,ANOVA_filter = "p",p= 0.05,plot = F)
+romics_proteins<-romicsZscores(romics_proteins)
+```
+
+Student's T.tests were then performed to compare specific conditions with each other.
+```{r T_test_all}
+romics_proteins<-romicsTtest(romics_proteins)
+romicsVolcano(romics_proteins)
+```
+
+The proteins up and down within each t.test were used to performed enrichment analysis to evaluate what functions were enriched in the different significant groups
+```{r T_test_enrichments}
+Universe<-gsub("\\;.*","",rownames(romics_proteins$statistics))
+up_ASG1_vs_ASG0 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$A_G1_vs_A_G0_Ttest_p<0.05&romics_proteins$statistics$`log(A_G1/A_G0)`>0])
+up_WTG0_vs_ASG0 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$WT_G0_vs_A_G0_Ttest_p<0.05&romics_proteins$statistics$`log(WT_G0/A_G0)`>0])
+up_WTG0_vs_ASG1 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$WT_G0_vs_A_G1_Ttest_p<0.05&romics_proteins$statistics$`log(WT_G0/A_G1)`>0])
+down_ASG1_vs_ASG0 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$A_G1_vs_A_G0_Ttest_p<0.05&romics_proteins$statistics$`log(A_G1/A_G0)`<0])
+down_WTG0_vs_ASG0 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$WT_G0_vs_A_G0_Ttest_p<0.05&romics_proteins$statistics$`log(WT_G0/A_G0)`<0])
+down_WTG0_vs_ASG1 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$WT_G0_vs_A_G1_Ttest_p<0.05&romics_proteins$statistics$`log(WT_G0/A_G1)`<0])
+
+up_ASG1_vs_ASG0_GO <- cbind(Enriched_in="up_ASG1_vs_ASG0", UniProt_GO_Fisher(up_ASG1_vs_ASG0,Universe))
+up_WTG0_vs_ASG0_GO <-cbind(Enriched_in="up_WTG0_vs_ASG0", UniProt_GO_Fisher(up_WTG0_vs_ASG0,Universe))
+up_WTG0_vs_ASG1_GO <-cbind(Enriched_in="up_WTG0_vs_ASG1", UniProt_GO_Fisher(up_WTG0_vs_ASG1,Universe))
+down_ASG1_vs_ASG0_GO <-cbind(Enriched_in="down_ASG1_vs_ASG0", UniProt_GO_Fisher(down_ASG1_vs_ASG0,Universe))
+down_WTG0_vs_ASG0_GO <-cbind(Enriched_in="down_WTG0_vs_ASG0", UniProt_GO_Fisher(down_WTG0_vs_ASG0,Universe))
+down_WTG0_vs_ASG1_GO <-cbind(Enriched_in="down_WTG0_vs_ASG1", UniProt_GO_Fisher(down_WTG0_vs_ASG1,Universe))
+
+up_ASG1_vs_ASG0_KEGG <- cbind(Enriched_in="up_ASG1_vs_ASG0", UniProt_KEGG_Fisher(up_ASG1_vs_ASG0,Universe))
+up_WTG0_vs_ASG0_KEGG <-cbind(Enriched_in="up_WTG0_vs_ASG0", UniProt_KEGG_Fisher(up_WTG0_vs_ASG0,Universe))
+up_WTG0_vs_ASG1_KEGG <-cbind(Enriched_in="up_WTG0_vs_ASG1", UniProt_KEGG_Fisher(up_WTG0_vs_ASG1,Universe))
+down_ASG1_vs_ASG0_KEGG <-cbind(Enriched_in="down_ASG1_vs_ASG0", UniProt_KEGG_Fisher(down_ASG1_vs_ASG0,Universe))
+down_WTG0_vs_ASG0_KEGG <-cbind(Enriched_in="down_WTG0_vs_ASG0", UniProt_KEGG_Fisher(down_WTG0_vs_ASG0,Universe))
+down_WTG0_vs_ASG1_KEGG <-cbind(Enriched_in="down_WTG0_vs_ASG1", UniProt_KEGG_Fisher(down_WTG0_vs_ASG1,Universe))
+
+Enrichments_Ttests<-rbind(up_ASG1_vs_ASG0_GO,up_ASG1_vs_ASG0_KEGG,up_WTG0_vs_ASG0_GO,up_WTG0_vs_ASG0_KEGG,up_WTG0_vs_ASG1_GO,up_WTG0_vs_ASG1_KEGG,down_ASG1_vs_ASG0_GO,down_ASG1_vs_ASG0_KEGG,down_WTG0_vs_ASG0_GO,down_WTG0_vs_ASG0_KEGG,down_WTG0_vs_ASG1_GO,down_WTG0_vs_ASG1_KEGG)
+  
+Enrichments_Ttests <- Enrichments_Ttests[Enrichments_Ttests$pval<0.1& Enrichments_Ttests>1,]
+
+write.csv(up_ASG1_vs_ASG0,file="./03_Output_files/up_ASG1_vs_ASG0.csv")
+write.csv(up_WTG0_vs_ASG0,file="./03_Output_files/up_WTG0_vs_ASG0.csv")
+write.csv(up_WTG0_vs_ASG1,file="./03_Output_files/up_WTG0_vs_ASG1.csv")
+write.csv(down_ASG1_vs_ASG0,file="./03_Output_files/down_ASG1_vs_ASG0.csv")
+write.csv(down_WTG0_vs_ASG0,file="./03_Output_files/down_WTG0_vs_ASG0.csv")
+write.csv(down_WTG0_vs_ASG1,file="./03_Output_files/down_WTG0_vs_ASG1.csv")
+
+datatable(Enrichments_Ttests)
+```
+
+The same was done for the different Clusters of the heatmap
+```{r enrichment_Clusters}
+Clust1<-gsub("\\;.*","",rownames(romics_proteins$statistics)[!is.na(romics_proteins$statistics$hclust_clusters)&romics_proteins$statistics$hclust_clusters==1])
+Clust2<-gsub("\\;.*","",rownames(romics_proteins$statistics)[!is.na(romics_proteins$statistics$hclust_clusters)&romics_proteins$statistics$hclust_clusters==2])
+Clust3<-gsub("\\;.*","",rownames(romics_proteins$statistics)[!is.na(romics_proteins$statistics$hclust_clusters)&romics_proteins$statistics$hclust_clusters==3])
+
+Clust1_GO<-cbind(Cluster=1, UniProt_GO_Fisher(Clust1,Universe))
+Clust2_GO<-cbind(Cluster=2, UniProt_GO_Fisher(Clust2,Universe))
+Clust3_GO<-cbind(Cluster=3, UniProt_GO_Fisher(Clust3,Universe))
+
+Clust1_KEGG<-cbind(Cluster=1, UniProt_KEGG_Fisher(Clust1,Universe))
+Clust2_KEGG<-cbind(Cluster=2, UniProt_KEGG_Fisher(Clust2,Universe))
+Clust3_KEGG<-cbind(Cluster=3, UniProt_KEGG_Fisher(Clust3,Universe))
+
+Enrichment_clusters<-rbind(Clust1_GO,Clust2_GO,Clust3_GO,Clust1_KEGG,Clust2_KEGG,Clust3_KEGG)
+Enrichment_clusters<-Enrichment_clusters[Enrichment_clusters$pval<0.1 & Enrichment_clusters$fold_change>1,]
+
+write.csv(Clust1,file="./03_Output_files/Clust1.csv")
+write.csv(Clust2,file="./03_Output_files/Clust2.csv")
+write.csv(Clust3,file="./03_Output_files/Clust3.csv")
+
+datatable(Enrichment_clusters)
+```
+
+# Eulerr Diagrams and enrichment
+
+To visualize the proteins that were significant in different comparison a proportional Euler/Venn diagram were plotted
+the proteins unique to each comparion were used to performed enrichment analysis
+```{r Venn_diagrams}
+#First lets create the lists
+ASG1_vs_ASG0 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$A_G1_vs_A_G0_Ttest_p<0.05])
+WTG0_vs_ASG0 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$WT_G0_vs_A_G0_Ttest_p<0.05])
+WTG0_vs_ASG1 <- gsub("\\;.*","",rownames(romics_proteins$statistics)[romics_proteins$statistics$WT_G0_vs_A_G1_Ttest_p<0.05])
+
+combined_names<- unique(c(ASG1_vs_ASG0,WTG0_vs_ASG0,WTG0_vs_ASG1))
+Venn_table<-data.frame(ASG1_vs_ASG0=(combined_names %in% ASG1_vs_ASG0),WTG0_vs_ASG0=(combined_names %in% WTG0_vs_ASG0),WTG0_vs_ASG1=(combined_names %in% WTG0_vs_ASG1))
+rownames(Venn_table)<-combined_names
+plot(euler(Venn_table), quantities = TRUE,fills = c("#00646d","#b71e5d","#dba027"))
+
+ASG1_vs_ASG0_unique<-rownames(Venn_table)[rowSums(Venn_table)==1 & Venn_table$ASG1_vs_ASG0==1]
+WTG0_vs_ASG0_unique<-rownames(Venn_table)[rowSums(Venn_table)==1 & Venn_table$WTG0_vs_ASG0==1]
+WTG0_vs_ASG1_unique<-rownames(Venn_table)[rowSums(Venn_table)==1 & Venn_table$WTG0_vs_ASG1==1]
+shared_in_3_comparisons<-rownames(Venn_table)[rowSums(Venn_table)==3]
+
+ASG1_vs_ASG0_unique_GO<-cbind(Enrichment_for="ASG1_vs_ASG0_unique", UniProt_GO_Fisher(ASG1_vs_ASG0_unique,Universe))
+WTG0_vs_ASG0_unique_GO<-cbind(Enrichment_for="WTG0_vs_ASG0_unique", UniProt_GO_Fisher(WTG0_vs_ASG0_unique,Universe))
+WTG0_vs_ASG1_unique_GO<-cbind(Enrichment_for="WTG0_vs_ASG1_unique", UniProt_GO_Fisher(WTG0_vs_ASG1_unique,Universe))
+ASG1_vs_ASG0_unique_KEGG<-cbind(Enrichment_for="ASG1_vs_ASG0_unique", UniProt_KEGG_Fisher(ASG1_vs_ASG0_unique,Universe))
+WTG0_vs_ASG0_unique_KEGG<-cbind(Enrichment_for="WTG0_vs_ASG0_unique", UniProt_KEGG_Fisher(WTG0_vs_ASG0_unique,Universe))
+WTG0_vs_ASG1_unique_KEGG<-cbind(Enrichment_for="WTG0_vs_ASG1_unique", UniProt_KEGG_Fisher(WTG0_vs_ASG1_unique,Universe))
+
+Venn_unique_enrichments<-rbind(ASG1_vs_ASG0_unique_GO,ASG1_vs_ASG0_unique_KEGG,WTG0_vs_ASG0_unique_GO,WTG0_vs_ASG0_unique_KEGG,WTG0_vs_ASG1_unique_GO,WTG0_vs_ASG1_unique_KEGG)
+Venn_unique_enrichments<-Venn_unique_enrichments[Venn_unique_enrichments$pval<0.1&Venn_unique_enrichments$fold_change>1,]
+datatable(Venn_unique_enrichments)
+
+write.csv(ASG1_vs_ASG0_unique,"./03_Output_files/ASG1_vs_ASG0_unique.csv",row.names = F)
+write.csv(WTG0_vs_ASG0_unique,"./03_Output_files/WTG0_vs_ASG0_unique.csv",row.names = F)
+write.csv(WTG0_vs_ASG1_unique,"./03_Output_files/WTG0_vs_ASG1_unique.csv",row.names = F)
+
+write.table(Venn_unique_enrichments,file="./03_Output_files/Venn_unique_enrichments.txt",sep = "\t",row.names = F)
+```
+
+
+# Data export
+The data generated abd the enrichment analysis are exported as a csv file
+```{r data_export_all}
+export_stats<-romicsExportData(romics_proteins,statistics = T,missing_data = T)
+export_stats<-cbind(UniProt_Name=rownames(export_stats),export_stats)
+export_stats<-merge(export_stats,IDsdetails,by="UniProt_Name")
+write.csv(export_stats,file= "./03_Output_files/Cell_cycle_alport_proteomics.csv")
+write.table(enriched_top10_percent,file="./03_Output_files/enriched_top10_percent_PC.txt",sep="\t")
+write.table(Enrichments_Ttests,file= "./03_Output_files/Enrichments_Ttests.txt",sep="\t")
+write.table(Enrichment_clusters,file= "./03_Output_files/Enrichment_clusters.txt",sep="\t")
+```
+
+
+

@@ -1,0 +1,4 @@
+id,AS_G0_A,AS_G0_B,AS_G0_C,AS_G1_A,AS_G1_B,AS_G1_C,WT_G0_A,WT_G0_B,WT_G0_C
+Condition,A_G0,A_G0,A_G0,A_G1,A_G1,A_G1,WT_G0,WT_G0,WT_G0
+Mice,Alport,Alport,Alport,Alport,Alport,Alport,WT,WT,WT
+Phase,G0,G0,G0,G1,G1,G1,G0,G0,G0
